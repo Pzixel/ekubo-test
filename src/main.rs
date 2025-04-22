@@ -21,18 +21,33 @@ async fn main() {
     let env_config: EnvConfig = envy::from_env().unwrap();
     let web3 = web3::Web3::new(web3::transports::Http::new(&env_config.mainnet_rpc_url).unwrap());
 
-    let pool = serde_json::json!({
-        "poolKey": {
-          "token0": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-          "token1": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
-          "config": "0x00000000000000000000000000000000000000000001a36e2eb1c43200000032"
-        },
-        "poolId": "0x0e647f6d174aa84c22fddeef0af92262b878ba6f86094e54dbec558c0a53ab79",
-        "tick": 0,
-        "sqrtRatio": "39614081261743854815199363072",
-        "extension": "Base"
-    });
-    test_pool(&web3, pool).await;
+    let pools = [
+        serde_json::json!({
+            "poolKey": {
+            "token0": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            "token1": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+            "config": "0x00000000000000000000000000000000000000000001a36e2eb1c43200000032"
+            },
+            "poolId": "0x0e647f6d174aa84c22fddeef0af92262b878ba6f86094e54dbec558c0a53ab79",
+            "tick": 0,
+            "sqrtRatio": "39614081261743854815199363072",
+            "extension": "Base"
+        }),
+        serde_json::json!({
+            "poolKey": {
+              "token0": "0x0000000000000000000000000000000000000000",
+              "token1": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "config": "0x00000000000000000000000000000000000000000020c49ba5e353f7000003e8"
+            },
+            "poolId": "0x7bc09681ee7056bc1fbf1ef479a99f1e89c106a4e20e2214f56bcc36ccc911bd",
+            "tick": -20074520,
+            "sqrtRatio": "19807906982078646688166797756",
+            "extension": "Base"
+          }),
+    ];
+    for pool in pools.into_iter() {
+        test_pool(&web3, pool).await;
+    }
 }
 
 async fn test_pool(web3: &Web3<Http>, pool: serde_json::Value) {
@@ -93,7 +108,7 @@ fn create_base_pool(
         }
     }).collect::<Vec<_>>();
 
-    dbg!(&sorted_ticks);
+    dbg!(&sorted_ticks, liquidity);
 
     let state = BasePoolState {
         sqrt_ratio,
