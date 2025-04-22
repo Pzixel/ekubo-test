@@ -1,8 +1,9 @@
 #![allow(warnings)]
 use std::str::FromStr;
 
-use ethcontract::{H256, U256};
-use evm_ekubo_sdk::quoting::{base_pool::BasePoolState, types::{Config, NodeKey, Pool, QuoteParams, TokenAmount}};
+use ethcontract::{Http, H256, U256};
+use evm_ekubo_sdk::quoting::{base_pool::{BasePool, BasePoolState}, types::{Config, NodeKey, Pool, QuoteParams, TokenAmount}};
+use web3::Web3;
 
 ethcontract::contract!("EkuboCore.json", contract = EkuboCore);
 ethcontract::contract!("EkuboDataFetcher.json", contract = EkuboDataFetcher);
@@ -31,7 +32,10 @@ async fn main() {
         "sqrtRatio": "39614081261743854815199363072",
         "extension": "Base"
     });
+    test_pool(&web3, pool).await;
+}
 
+async fn test_pool(web3: &Web3<Http>, pool: serde_json::Value) {
     let data_fetcher = EkuboDataFetcher::at(&web3, "0x91cB8a896cAF5e60b1F7C4818730543f849B408c".parse().unwrap());
 
     let config: H256 = pool["poolKey"]["config"].as_str().unwrap().parse().unwrap();
@@ -50,30 +54,14 @@ async fn main() {
         .await
         .unwrap();
 
-    let (tick, sqrt_ratio_float, liquidity, min_tick, max_tick, ticks) = vec.into_iter().next().unwrap();
-    let sqrt_ratio = float_sqrt_ratio_to_fixed(sqrt_ratio_float);
-
-    let mut sorted_ticks = ticks.into_iter().map(|(index, liquidity_delta)| {
-        evm_ekubo_sdk::quoting::types::Tick {
-            index: index.into(),
-            liquidity_delta,
-        }
-    }).collect::<Vec<_>>();
-
-    dbg!(&sorted_ticks);
-
+    let data = vec.into_iter().next().unwrap();
     let key = NodeKey {
         token0: pool["poolKey"]["token0"].as_str().unwrap().parse().unwrap(),
         token1: pool["poolKey"]["token1"].as_str().unwrap().parse().unwrap(),
         config: to_parsed_config(config),
     };
-    let state = BasePoolState {
-        sqrt_ratio,
-        liquidity,
-        active_tick_index: find_nearest_initialized_tick_index(&sorted_ticks, tick),
-    };
-    dbg!(&state);
-    let pool = evm_ekubo_sdk::quoting::base_pool::BasePool::new(key, state, sorted_ticks).unwrap();
+    let pool = create_base_pool(key, data);
+
     let amount_out = pool.quote(QuoteParams {
         token_amount: TokenAmount { 
             token: key.token0,
@@ -90,6 +78,31 @@ async fn main() {
         amount_out.calculated_amount,
         key.token1,
     );
+}
+
+fn create_base_pool(
+    key: NodeKey,
+    (tick, sqrt_ratio_float, liquidity, min_tick, max_tick, ticks): (i32, u128, u128, i32, i32, Vec<(i32, i128)>),
+) -> BasePool {
+    let sqrt_ratio = float_sqrt_ratio_to_fixed(sqrt_ratio_float);
+
+    let mut sorted_ticks = ticks.into_iter().map(|(index, liquidity_delta)| {
+        evm_ekubo_sdk::quoting::types::Tick {
+            index: index.into(),
+            liquidity_delta,
+        }
+    }).collect::<Vec<_>>();
+
+    dbg!(&sorted_ticks);
+
+    let state = BasePoolState {
+        sqrt_ratio,
+        liquidity,
+        active_tick_index: find_nearest_initialized_tick_index(&sorted_ticks, tick),
+    };
+    dbg!(&state);
+    let pool = evm_ekubo_sdk::quoting::base_pool::BasePool::new(key, state, sorted_ticks).unwrap();
+    pool
 }
 
 pub fn to_parsed_config(config: H256) -> evm_ekubo_sdk::quoting::types::Config {
