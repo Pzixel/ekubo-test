@@ -2,7 +2,7 @@
 use std::str::FromStr;
 
 use ethcontract::{Http, H256, U256};
-use evm_ekubo_sdk::quoting::{base_pool::{BasePool, BasePoolState}, types::{Config, NodeKey, Pool, QuoteParams, TokenAmount}};
+use evm_ekubo_sdk::quoting::{base_pool::{BasePool, BasePoolState}, types::{Config, NodeKey, Pool, QuoteParams, Tick, TokenAmount}};
 use web3::Web3;
 
 ethcontract::contract!("EkuboCore.json", contract = EkuboCore);
@@ -110,11 +110,19 @@ fn create_base_pool(
 
     dbg!(&sorted_ticks, liquidity);
 
-    let state = BasePoolState {
+    let mut state = BasePoolState {
         sqrt_ratio,
         liquidity,
         active_tick_index: find_nearest_initialized_tick_index(&sorted_ticks, tick),
     };
+    add_liquidity_cutoffs(
+        &mut sorted_ticks,
+        &mut state.active_tick_index,
+        tick,
+        liquidity,
+        min_tick,
+        max_tick,
+    );
     dbg!(&state);
     let pool = evm_ekubo_sdk::quoting::base_pool::BasePool::new(key, state, sorted_ticks).unwrap();
     pool
@@ -181,4 +189,167 @@ fn find_nearest_initialized_tick_index(
     }
 
     None
+}
+
+fn add_liquidity_cutoffs(
+    sorted_ticks: &mut Vec<evm_ekubo_sdk::quoting::types::Tick>,
+    active_tick_index: &mut Option<usize>,
+    active_tick: i32,
+    liquidity: u128,
+    min_tick: i32,
+    max_tick: i32,
+) {
+    // const { sortedTicks, liquidity, activeTick } = state;
+
+    // let activeTickIndex = undefined;
+    // let currentLiquidity = 0n;
+
+    // // The liquidity added/removed by out-of-range initialized ticks (i.e. lower than minCheckedTickNumber)
+    // let liquidityDeltaMin = 0n;
+
+    *active_tick_index = None;
+    let mut current_liquidity = 0i128;
+    let mut liquidity_delta_min = 0i128;
+
+    // for (let i = 0; i < sortedTicks.length; i++) {
+    //     const tick = sortedTicks[i];
+
+    //     if (typeof activeTickIndex === 'undefined' && activeTick < tick.number) {
+    //       activeTickIndex = i === 0 ? null : i - 1;
+
+    //       liquidityDeltaMin = liquidity - currentLiquidity;
+
+    //       // We now need to switch to tracking the liquidity that needs to be cut off at maxCheckedTickNumber, therefore reset to the actual liquidity
+    //       currentLiquidity = liquidity;
+    //     }
+
+    //     currentLiquidity += tick.liquidityDelta;
+    //   }
+
+    for i in 0..sorted_ticks.len() {
+        let tick = &sorted_ticks[i];
+
+        if active_tick_index.is_none() && active_tick < tick.index {
+            *active_tick_index = if i == 0 { None } else { Some(i - 1) };
+
+            liquidity_delta_min = i128::try_from(liquidity).unwrap() - current_liquidity;
+
+            // We now need to switch to tracking the liquidity that needs to be cut off at maxCheckedTickNumber, therefore reset to the actual liquidity
+            current_liquidity = i128::try_from(liquidity).unwrap();
+        }
+
+        current_liquidity += tick.liquidity_delta;
+    }
+
+    // if (typeof activeTickIndex === 'undefined') {
+    //     activeTickIndex = sortedTicks.length > 0 ? sortedTicks.length - 1 : null;
+    //     liquidityDeltaMin = liquidity - currentLiquidity;
+    //     currentLiquidity = liquidity;
+    //   }
+
+    //   state.activeTickIndex = activeTickIndex;
+
+    if active_tick_index.is_none() {
+        *active_tick_index = if sorted_ticks.len() > 0 {
+            Some(sorted_ticks.len() - 1)
+        } else {
+            None
+        };
+        liquidity_delta_min = i128::try_from(liquidity).unwrap() - current_liquidity;
+        current_liquidity = i128::try_from(liquidity).unwrap();
+    }
+
+    update_tick(
+        sorted_ticks,
+        active_tick,
+        active_tick_index,
+        min_tick,
+        liquidity_delta_min,
+        false,
+        true,
+    );
+    update_tick(
+        sorted_ticks,
+        active_tick,
+        active_tick_index,
+        max_tick,
+        current_liquidity,
+        true,
+        true,
+    );
+}
+
+
+fn update_tick(
+    sorted_ticks: &mut Vec<evm_ekubo_sdk::quoting::types::Tick>,
+    active_tick: i32,
+    active_tick_index: &mut Option<usize>,
+    mut updated_tick_number: i32,
+    mut liquidity_delta: i128,
+    mut upper: bool,
+    mut force_insert: bool,
+) {
+    if upper {
+        liquidity_delta = -liquidity_delta;
+    }
+
+    let nearest_tick_index = find_nearest_initialized_tick_index(
+        &sorted_ticks,
+        updated_tick_number,
+    );
+
+    let nearest_tick = if nearest_tick_index.is_none() {
+        None
+    } else {
+        Some(sorted_ticks[nearest_tick_index.unwrap()])
+    };
+    let nearest_tick_number = nearest_tick.map(|tick| tick.index);
+    let new_tick_referenced = nearest_tick_number != Some(updated_tick_number);
+
+    if new_tick_referenced {
+        if !force_insert && nearest_tick_index.is_none() {
+            sorted_ticks[0].liquidity_delta += liquidity_delta;
+        } else if !force_insert && nearest_tick_index == Some(sorted_ticks.len() - 1) {
+            let last = sorted_ticks.len() - 1;
+            sorted_ticks[last].liquidity_delta += liquidity_delta;
+        } else {
+            sorted_ticks.insert(
+                nearest_tick_index.map_or(0, |i| i + 1),
+                Tick {
+                    index: updated_tick_number,
+                    liquidity_delta,
+                },
+            );
+
+            if active_tick >= updated_tick_number {
+                // state.activeTickIndex =
+                // state.activeTickIndex === null ? 0 : state.activeTickIndex + 1;
+                *active_tick_index = active_tick_index.map(|i| i + 1).or(Some(0));
+            }
+        }
+    } else {
+        // const newDelta = nearestTick!.liquidityDelta + liquidityDelta;
+
+        // if (
+        //   newDelta === 0n &&
+        //   !state.checkedTicksBounds.includes(nearestTickNumber)
+        // ) {
+        //   sortedTicks.splice(nearestTickIndex!, 1);
+  
+        //   if (state.activeTick >= updatedTickNumber) {
+        //     state.activeTickIndex!--;
+        //   }
+        // } else {
+        //   nearestTick!.liquidityDelta = newDelta;
+        // }
+        let new_delta = nearest_tick.unwrap().liquidity_delta + liquidity_delta;
+        if new_delta == 0 && !sorted_ticks.iter().any(|tick| tick.index == nearest_tick_number.unwrap()) {
+            sorted_ticks.retain(|tick| tick.index != nearest_tick_number.unwrap());
+            if active_tick >= updated_tick_number {
+                *active_tick_index = active_tick_index.map(|i| i - 1);
+            }
+        } else {
+            sorted_ticks[nearest_tick_index.unwrap()].liquidity_delta = new_delta;
+        }
+    }
 }
