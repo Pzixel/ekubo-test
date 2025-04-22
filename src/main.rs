@@ -60,6 +60,8 @@ async fn main() {
         }
     }).collect::<Vec<_>>();
 
+    dbg!(&sorted_ticks);
+
     let key = NodeKey {
         token0: pool["poolKey"]["token0"].as_str().unwrap().parse().unwrap(),
         token1: pool["poolKey"]["token1"].as_str().unwrap().parse().unwrap(),
@@ -68,8 +70,9 @@ async fn main() {
     let state = BasePoolState {
         sqrt_ratio,
         liquidity,
-        active_tick_index: None, // ? Is it correct/
+        active_tick_index: find_nearest_initialized_tick_index(&sorted_ticks, tick),
     };
+    dbg!(&state);
     let pool = evm_ekubo_sdk::quoting::base_pool::BasePool::new(key, state, sorted_ticks).unwrap();
     let amount_out = pool.quote(QuoteParams {
         token_amount: TokenAmount { 
@@ -121,4 +124,33 @@ fn float_sqrt_ratio_to_fixed(sqrt_ratio_float: u128) -> evm_ekubo_sdk::math::uin
         (sqrt_ratio_float & NOT_BIT_MASK) <<
         (U256::from(2) + ((sqrt_ratio_float & BIT_MASK) >> 89))
     ).0)
+}
+
+
+fn find_nearest_initialized_tick_index(
+    sorted_ticks: &[evm_ekubo_sdk::quoting::types::Tick],
+    tick: i32,
+) -> Option<usize> {
+    let mut l = 0;
+    let mut r = sorted_ticks.len();
+
+    while l < r {
+        let mid = (l + r) / 2;
+        let mid_tick = sorted_ticks[mid].index;
+
+        if mid_tick <= tick {
+            // If it's the last index, or the next tick is greater, we've found our index
+            if mid == sorted_ticks.len() - 1 || sorted_ticks[mid + 1].index > tick {
+                return Some(mid);
+            } else {
+                // Otherwise our value is to the right of this one
+                l = mid;
+            }
+        } else {
+            // The mid tick is greater than the one we want, so we know it's not mid
+            r = mid;
+        }
+    }
+
+    None
 }
