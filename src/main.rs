@@ -2,7 +2,7 @@
 use std::str::FromStr;
 
 use ethcontract::{Http, H256, U256};
-use evm_ekubo_sdk::quoting::{base_pool::{BasePool, BasePoolState}, types::{Config, NodeKey, Pool, QuoteParams, Tick, TokenAmount}};
+use evm_ekubo_sdk::quoting::{base_pool::{BasePool, BasePoolState}, types::{Config, NodeKey, Pool, QuoteParams, Tick, TokenAmount}, util::find_nearest_initialized_tick_index};
 use web3::Web3;
 
 ethcontract::contract!("EkuboCore.json", contract = EkuboCore);
@@ -31,7 +31,8 @@ async fn main() {
             "poolId": "0x0e647f6d174aa84c22fddeef0af92262b878ba6f86094e54dbec558c0a53ab79",
             "tick": 0,
             "sqrtRatio": "39614081261743854815199363072",
-            "extension": "Base"
+            "extension": "Base",
+            "amount": "100000000",
         }),
         serde_json::json!({
             "poolKey": {
@@ -42,15 +43,16 @@ async fn main() {
             "poolId": "0x7bc09681ee7056bc1fbf1ef479a99f1e89c106a4e20e2214f56bcc36ccc911bd",
             "tick": -20074520,
             "sqrtRatio": "19807906982078646688166797756",
-            "extension": "Base"
+            "extension": "Base",
+            "amount": "100000000000000000",
           }),
     ];
     for pool in pools.into_iter() {
-        test_pool(&web3, pool).await;
+        test_pool(&web3, pool.clone(),pool["amount"].as_str().unwrap().parse::<i128>().unwrap(),).await;
     }
 }
 
-async fn test_pool(web3: &Web3<Http>, pool: serde_json::Value) {
+async fn test_pool(web3: &Web3<Http>, pool: serde_json::Value, amount: i128) {
     let data_fetcher = EkuboDataFetcher::at(&web3, "0x91cB8a896cAF5e60b1F7C4818730543f849B408c".parse().unwrap());
 
     let config: H256 = pool["poolKey"]["config"].as_str().unwrap().parse().unwrap();
@@ -80,7 +82,7 @@ async fn test_pool(web3: &Web3<Http>, pool: serde_json::Value) {
     let amount_out = pool.quote(QuoteParams {
         token_amount: TokenAmount { 
             token: key.token0,
-            amount: 100_000_000.into() 
+            amount: amount
         },
         sqrt_ratio_limit: None,
         override_state: None,
@@ -101,30 +103,31 @@ fn create_base_pool(
 ) -> BasePool {
     let sqrt_ratio = float_sqrt_ratio_to_fixed(sqrt_ratio_float);
 
-    let mut sorted_ticks = ticks.into_iter().map(|(index, liquidity_delta)| {
+    let ticks = ticks.into_iter().map(|(index, liquidity_delta)| {
         evm_ekubo_sdk::quoting::types::Tick {
             index: index.into(),
             liquidity_delta,
         }
     }).collect::<Vec<_>>();
 
-    dbg!(&sorted_ticks, liquidity);
+    // dbg!(&sorted_ticks, liquidity);
 
-    let mut state = BasePoolState {
-        sqrt_ratio,
-        liquidity,
-        active_tick_index: find_nearest_initialized_tick_index(&sorted_ticks, tick),
-    };
-    add_liquidity_cutoffs(
-        &mut sorted_ticks,
-        &mut state.active_tick_index,
-        tick,
-        liquidity,
-        min_tick,
-        max_tick,
-    );
-    dbg!(&state);
-    let pool = evm_ekubo_sdk::quoting::base_pool::BasePool::new(key, state, sorted_ticks).unwrap();
+    // let mut state = BasePoolState {
+    //     sqrt_ratio,
+    //     liquidity,
+    //     active_tick_index: find_nearest_initialized_tick_index(&sorted_ticks, tick),
+    // };
+    // add_liquidity_cutoffs(
+    //     &mut sorted_ticks,
+    //     &mut state.active_tick_index,
+    //     tick,
+    //     liquidity,
+    //     min_tick,
+    //     max_tick,
+    // );
+    // dbg!(&state);
+    let pool = evm_ekubo_sdk::quoting::base_pool::BasePool::from_partial_data(key, sqrt_ratio, ticks, min_tick, max_tick, liquidity, tick)
+        .unwrap();
     pool
 }
 
@@ -160,35 +163,6 @@ fn float_sqrt_ratio_to_fixed(sqrt_ratio_float: u128) -> evm_ekubo_sdk::math::uin
         (sqrt_ratio_float & NOT_BIT_MASK) <<
         (U256::from(2) + ((sqrt_ratio_float & BIT_MASK) >> 89))
     ).0)
-}
-
-
-fn find_nearest_initialized_tick_index(
-    sorted_ticks: &[evm_ekubo_sdk::quoting::types::Tick],
-    tick: i32,
-) -> Option<usize> {
-    let mut l = 0;
-    let mut r = sorted_ticks.len();
-
-    while l < r {
-        let mid = (l + r) / 2;
-        let mid_tick = sorted_ticks[mid].index;
-
-        if mid_tick <= tick {
-            // If it's the last index, or the next tick is greater, we've found our index
-            if mid == sorted_ticks.len() - 1 || sorted_ticks[mid + 1].index > tick {
-                return Some(mid);
-            } else {
-                // Otherwise our value is to the right of this one
-                l = mid;
-            }
-        } else {
-            // The mid tick is greater than the one we want, so we know it's not mid
-            r = mid;
-        }
-    }
-
-    None
 }
 
 fn add_liquidity_cutoffs(
